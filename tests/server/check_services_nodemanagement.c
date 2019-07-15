@@ -2,19 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <open62541/server_config_default.h>
+
+#include "server/ua_server_internal.h"
+#include "server/ua_services.h"
+
+#include <check.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 
-#include "check.h"
-#include "server/ua_services.h"
-#include "ua_client.h"
-#include "ua_types.h"
-#include "ua_config_default.h"
-#include "server/ua_server_internal.h"
-
 static UA_Server *server = NULL;
-static UA_ServerConfig *config = NULL;
 static UA_Int32 handleCalled = 0;
 
 static UA_StatusCode
@@ -26,21 +24,22 @@ globalInstantiationMethod(UA_Server *server_,
 }
 
 static void setup(void) {
-    config = UA_ServerConfig_new_default();
+    server = UA_Server_new();
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    UA_ServerConfig_setDefault(config);
+
     UA_GlobalNodeLifecycle lifecycle;
     lifecycle.constructor = globalInstantiationMethod;
     lifecycle.destructor = NULL;
     config->nodeLifecycle = lifecycle;
-    server = UA_Server_new(config);
 }
 
 static void teardown(void) {
     UA_Server_delete(server);
-    UA_ServerConfig_delete(config);
 }
 
 START_TEST(AddVariableNode) {
-    /* add a variable node to the address space */
+    /* Add a variable node to the address space */
     UA_VariableAttributes attr = UA_VariableAttributes_default;
     UA_Int32 myInteger = 42;
     UA_Variant_setScalar(&attr.value, &myInteger, &UA_TYPES[UA_TYPES_INT32]);
@@ -58,10 +57,13 @@ START_TEST(AddVariableNode) {
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
 } END_TEST
 
-START_TEST(InstantiateVariableTypeNode) {
+static UA_NodeId pointTypeId;
+
+static void
+addVariableTypeNode(void) {
     UA_VariableTypeAttributes vtAttr = UA_VariableTypeAttributes_default;
     vtAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
-    vtAttr.valueRank = 1; /* array with one dimension */
+    vtAttr.valueRank = UA_VALUERANK_ONE_DIMENSION;
     UA_UInt32 arrayDims[1] = {2};
     vtAttr.arrayDimensions = arrayDims;
     vtAttr.arrayDimensionsSize = 1;
@@ -71,7 +73,6 @@ START_TEST(InstantiateVariableTypeNode) {
     UA_Double zero[2] = {0.0, 0.0};
     UA_Variant_setArray(&vtAttr.value, zero, 2, &UA_TYPES[UA_TYPES_DOUBLE]);
 
-    UA_NodeId pointTypeId;
     UA_StatusCode res =
         UA_Server_addVariableTypeNode(server, UA_NODEID_NULL,
                                       UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
@@ -79,11 +80,16 @@ START_TEST(InstantiateVariableTypeNode) {
                                       UA_QUALIFIEDNAME(1, "2DPoint Type"), UA_NODEID_NULL,
                                       vtAttr, NULL, &pointTypeId);
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
+}
 
+START_TEST(InstantiateVariableTypeNode) {
+    addVariableTypeNode();
+    
     /* Prepare the node attributes */
+    UA_UInt32 arrayDims[1] = {2};
     UA_VariableAttributes vAttr = UA_VariableAttributes_default;
     vAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
-    vAttr.valueRank = 1; /* array with one dimension */
+    vAttr.valueRank = UA_VALUERANK_ONE_DIMENSION;
     vAttr.arrayDimensions = arrayDims;
     vAttr.arrayDimensionsSize = 1;
     vAttr.displayName = UA_LOCALIZEDTEXT("en-US", "2DPoint Variable");
@@ -92,11 +98,12 @@ START_TEST(InstantiateVariableTypeNode) {
 
     /* Add the node */
     UA_NodeId pointVariableId;
-    res = UA_Server_addVariableNode(server, UA_NODEID_NULL,
-                                    UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
-                                    UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                    UA_QUALIFIEDNAME(1, "2DPoint Type"), pointTypeId,
-                                    vAttr, NULL, &pointVariableId);
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, UA_NODEID_NULL,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "2DPoint Type"), pointTypeId,
+                                  vAttr, NULL, &pointVariableId);
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
 
     /* Was the value instantiated? */
@@ -107,8 +114,59 @@ START_TEST(InstantiateVariableTypeNode) {
     UA_Variant_deleteMembers(&val);
 } END_TEST
 
+START_TEST(InstantiateVariableTypeNodeWrongDims) {
+    addVariableTypeNode();
+    
+    /* Prepare the node attributes */
+    UA_UInt32 arrayDims[1] = {3}; /* This will fail as the dimensions are too big */
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    vAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    vAttr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+    vAttr.arrayDimensions = arrayDims;
+    vAttr.arrayDimensionsSize = 1;
+    vAttr.displayName = UA_LOCALIZEDTEXT("en-US", "2DPoint Variable");
+    vAttr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+    /* vAttr.value is left empty, the server instantiates with the default value */
+
+    /* Add the node */
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, UA_NODEID_NULL,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "2DPoint Type"), pointTypeId,
+                                  vAttr, NULL, NULL);
+    ck_assert_int_eq(UA_STATUSCODE_BADTYPEMISMATCH, res);
+} END_TEST
+
+START_TEST(InstantiateVariableTypeNodeLessDims) {
+    addVariableTypeNode();
+    
+    /* Prepare the node attributes */
+    UA_UInt32 arrayDims[1] = {1}; /* This will match as the dimension constraints are an upper bound */
+    UA_VariableAttributes vAttr = UA_VariableAttributes_default;
+    vAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    vAttr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+    vAttr.arrayDimensions = arrayDims;
+    vAttr.arrayDimensionsSize = 1;
+    vAttr.displayName = UA_LOCALIZEDTEXT("en-US", "2DPoint Variable");
+    vAttr.accessLevel = UA_ACCESSLEVELMASK_READ | UA_ACCESSLEVELMASK_WRITE;
+    /* vAttr.value is left empty, the server instantiates with the default value */
+
+    /* Add the node */
+    UA_StatusCode res =
+        UA_Server_addVariableNode(server, UA_NODEID_NULL,
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                  UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+                                  UA_QUALIFIEDNAME(1, "2DPoint Type"), pointTypeId,
+                                  vAttr, NULL, NULL);
+    ck_assert_int_eq(UA_STATUSCODE_BADTYPEMISMATCH, res);
+} END_TEST
+
 START_TEST(AddComplexTypeWithInheritance) {
     /* add a variable node to the address space */
+
+    /* Node UA_NS0ID_SERVERTYPE is not available in the minimal NS0 */
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     UA_ObjectAttributes attr = UA_ObjectAttributes_default;
     attr.description = UA_LOCALIZEDTEXT("en-US","fakeServerStruct");
     attr.displayName = UA_LOCALIZEDTEXT("en-US","fakeServerStruct");
@@ -120,10 +178,11 @@ START_TEST(AddComplexTypeWithInheritance) {
     UA_StatusCode res =
         UA_Server_addObjectNode(server, myObjectNodeId, parentNodeId,
                                 parentReferenceNodeId, myObjectName,
-                                UA_NODEID_NUMERIC(0, 2004), attr,
+                                UA_NODEID_NUMERIC(0, UA_NS0ID_SERVERTYPE), attr,
                                 &handleCalled, NULL);
     ck_assert_int_eq(UA_STATUSCODE_GOOD, res);
     ck_assert_int_gt(handleCalled, 0); // Should be 58, but may depend on NS0 XML detail
+#endif
 } END_TEST
 
 START_TEST(AddNodeTwiceGivesError) {
@@ -187,7 +246,7 @@ START_TEST(AddObjectWithConstructor) {
     res = UA_Server_addObjectNode(server, UA_NODEID_NULL,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                  UA_QUALIFIEDNAME(0, ""), objecttypeid,
+                                  UA_QUALIFIEDNAME(0, "MyObjectNode"), objecttypeid,
                                   attr2, NULL, NULL);
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
 
@@ -231,7 +290,7 @@ START_TEST(DeleteObjectWithDestructor) {
     res = UA_Server_addObjectNode(server, objectid,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                  UA_QUALIFIEDNAME(0, ""), objecttypeid,
+                                  UA_QUALIFIEDNAME(0, "MyObject"), objecttypeid,
                                   attr2, NULL, NULL);
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
 
@@ -251,7 +310,7 @@ START_TEST(DeleteObjectAndReferences) {
     res = UA_Server_addObjectNode(server, objectid,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                  UA_QUALIFIEDNAME(0, ""),
+                                  UA_QUALIFIEDNAME(0, "MyObject"),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
                                   attr, NULL, NULL);
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
@@ -294,7 +353,7 @@ START_TEST(DeleteObjectAndReferences) {
     res = UA_Server_addObjectNode(server, objectid,
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
-                                  UA_QUALIFIEDNAME(0, ""),
+                                  UA_QUALIFIEDNAME(0, "MyObject"),
                                   UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
                                   attr, NULL, NULL);
     ck_assert_int_eq(res, UA_STATUSCODE_GOOD);
@@ -339,11 +398,15 @@ START_TEST(InstantiateObjectType) {
                                        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
                                        mnAttr, NULL, &manufacturerNameId);
     ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+
+    /* UA_NS0ID_MODELLINGRULE_MANDATORY is not available in Minimal Nodeset */
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     /* Make the manufacturer name mandatory */
     retval = UA_Server_addReference(server, manufacturerNameId,
                                     UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
                                     UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY), true);
     ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+#endif
 
     UA_VariableAttributes modelAttr = UA_VariableAttributes_default;
     modelAttr.displayName = UA_LOCALIZEDTEXT("en-US", "ModelName");
@@ -365,7 +428,7 @@ START_TEST(InstantiateObjectType) {
 
     UA_VariableAttributes statusAttr = UA_VariableAttributes_default;
     statusAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Status");
-    statusAttr.valueRank = -1;
+    statusAttr.valueRank = UA_VALUERANK_SCALAR;
     UA_NodeId statusId;
     retval = UA_Server_addVariableNode(server, UA_NODEID_NULL, pumpTypeId,
                                        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
@@ -374,15 +437,18 @@ START_TEST(InstantiateObjectType) {
                                        statusAttr, NULL, &statusId);
     ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
 
+/* UA_NS0ID_MODELLINGRULE_MANDATORY is not available in Minimal Nodeset */
+#ifdef UA_GENERATED_NAMESPACE_ZERO
     /* Make the status variable mandatory */
     retval = UA_Server_addReference(server, statusId,
                                     UA_NODEID_NUMERIC(0, UA_NS0ID_HASMODELLINGRULE),
                                     UA_EXPANDEDNODEID_NUMERIC(0, UA_NS0ID_MODELLINGRULE_MANDATORY), true);
     ck_assert_int_eq(retval, UA_STATUSCODE_GOOD);
+#endif
 
     UA_VariableAttributes rpmAttr = UA_VariableAttributes_default;
     rpmAttr.displayName = UA_LOCALIZEDTEXT("en-US", "MotorRPM");
-    rpmAttr.valueRank = -1;
+    rpmAttr.valueRank = UA_VALUERANK_SCALAR;
     retval = UA_Server_addVariableNode(server, UA_NODEID_NULL, pumpTypeId,
                                        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
                                        UA_QUALIFIEDNAME(1, "MotorRPMs"),
@@ -410,6 +476,8 @@ int main(void) {
     tcase_add_checked_fixture(tc_addnodes, setup, teardown);
     tcase_add_test(tc_addnodes, AddVariableNode);
     tcase_add_test(tc_addnodes, InstantiateVariableTypeNode);
+    tcase_add_test(tc_addnodes, InstantiateVariableTypeNodeWrongDims);
+    tcase_add_test(tc_addnodes, InstantiateVariableTypeNodeLessDims);
     tcase_add_test(tc_addnodes, AddComplexTypeWithInheritance);
     tcase_add_test(tc_addnodes, AddNodeTwiceGivesError);
     tcase_add_test(tc_addnodes, AddObjectWithConstructor);

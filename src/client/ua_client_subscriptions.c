@@ -11,9 +11,10 @@
  *    Copyright 2017 (c) Stefan Profanter, fortiss GmbH
  */
 
-#include "ua_client_highlevel.h"
+#include <open62541/client_highlevel.h>
+#include <open62541/client_highlevel_async.h>
+
 #include "ua_client_internal.h"
-#include "ua_util.h"
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS /* conditional compilation */
 
@@ -138,7 +139,8 @@ UA_Client_Subscriptions_delete(UA_Client *client, const UA_DeleteSubscriptionsRe
 
     /* Loop over the removed subscriptions and remove internally */
     for(size_t i = 0; i < request.subscriptionIdsSize; i++) {
-        if(response.results[i] != UA_STATUSCODE_GOOD && response.results[i] != UA_STATUSCODE_BADSUBSCRIPTIONIDINVALID) {
+        if(response.results[i] != UA_STATUSCODE_GOOD &&
+           response.results[i] != UA_STATUSCODE_BADSUBSCRIPTIONIDINVALID) {
             /* Something was wrong, reinsert the subscription in the list */
             if (subs[i])
                 LIST_INSERT_HEAD(&client->subscriptions, subs[i], listEntry);
@@ -146,14 +148,13 @@ UA_Client_Subscriptions_delete(UA_Client *client, const UA_DeleteSubscriptionsRe
         }
 
         if(!subs[i]) {
-            UA_LOG_INFO(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_INFO(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                         "No internal representation of subscription %u",
                         request.subscriptionIds[i]);
             continue;
-        } else {
-            LIST_INSERT_HEAD(&client->subscriptions, subs[i], listEntry);
         }
-
+        
+        LIST_INSERT_HEAD(&client->subscriptions, subs[i], listEntry);
         UA_Client_Subscription_deleteInternal(client, subs[i]);
     }
 
@@ -201,6 +202,7 @@ UA_Client_Subscriptions_deleteSingle(UA_Client *client, UA_UInt32 subscriptionId
 void
 UA_Client_MonitoredItem_remove(UA_Client *client, UA_Client_Subscription *sub,
                                UA_Client_MonitoredItem *mon) {
+    // NOLINTNEXTLINE
     LIST_REMOVE(mon, listEntry);
     if(mon->deleteCallback)
         mon->deleteCallback(client, sub->subscriptionId, sub->context,
@@ -279,7 +281,7 @@ __UA_Client_MonitoredItems_create(UA_Client *client,
             (request->itemsToCreate[i].itemToMonitor.attributeId == UA_ATTRIBUTEID_EVENTNOTIFIER);
         LIST_INSERT_HEAD(&sub->monitoredItems, newMon, listEntry);
 
-        UA_LOG_DEBUG(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_DEBUG(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                     "Subscription %u | Added a MonitoredItem with handle %u",
                      sub->subscriptionId, newMon->clientHandle);
     }
@@ -342,11 +344,11 @@ UA_Client_MonitoredItems_createDataChange(UA_Client *client, UA_UInt32 subscript
 UA_CreateMonitoredItemsResponse UA_EXPORT
 UA_Client_MonitoredItems_createEvents(UA_Client *client,
             const UA_CreateMonitoredItemsRequest request, void **contexts,
-            UA_Client_EventNotificationCallback *callbacks,
-            UA_Client_DeleteMonitoredItemCallback *deleteCallbacks) {
+            UA_Client_EventNotificationCallback *callback,
+            UA_Client_DeleteMonitoredItemCallback *deleteCallback) {
     UA_CreateMonitoredItemsResponse response;
     __UA_Client_MonitoredItems_create(client, &request, contexts,
-                (void**)(uintptr_t)callbacks, deleteCallbacks, &response);
+                (void**)(uintptr_t)callback, deleteCallback, &response);
     return response;
 }
 
@@ -381,7 +383,7 @@ UA_Client_MonitoredItems_delete(UA_Client *client, const UA_DeleteMonitoredItems
 
     UA_Client_Subscription *sub = findSubscription(client, request.subscriptionId);
     if(!sub) {
-        UA_LOG_INFO(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_INFO(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                     "No internal representation of subscription %u",
                     request.subscriptionId);
         return response;
@@ -398,7 +400,8 @@ UA_Client_MonitoredItems_delete(UA_Client *client, const UA_DeleteMonitoredItems
         /* Delete the internal representation */
         UA_Client_MonitoredItem *mon;
         LIST_FOREACH(mon, &sub->monitoredItems, listEntry) {
-            if(mon->monitoredItemId == request.monitoredItemIds[i]) {
+            // NOLINTNEXTLINE
+            if (mon->monitoredItemId == request.monitoredItemIds[i]) {
                 UA_Client_MonitoredItem_remove(client, sub, mon);
                 break;
             }
@@ -434,6 +437,44 @@ UA_Client_MonitoredItems_deleteSingle(UA_Client *client, UA_UInt32 subscriptionI
     retval = response.results[0];
     UA_DeleteMonitoredItemsResponse_deleteMembers(&response);
     return retval;
+}
+
+UA_ModifyMonitoredItemsResponse UA_EXPORT
+UA_Client_MonitoredItems_modify(UA_Client *client,
+                                const UA_ModifyMonitoredItemsRequest request) {
+    UA_ModifyMonitoredItemsResponse response;
+
+    UA_Client_Subscription *sub = 0;
+    LIST_FOREACH(sub, &client->subscriptions, listEntry) {
+        if (sub->subscriptionId == request.subscriptionId)
+            break;
+    }
+
+    if (!sub) {
+        UA_ModifyMonitoredItemsResponse_init(&response);
+        response.responseHeader.serviceResult = UA_STATUSCODE_BADSUBSCRIPTIONIDINVALID;
+        return response;
+    }
+
+    UA_ModifyMonitoredItemsRequest modifiedRequest;
+    UA_ModifyMonitoredItemsRequest_copy(&request, &modifiedRequest);
+
+    for (size_t i = 0; i < modifiedRequest.itemsToModifySize; ++i) {
+        UA_Client_MonitoredItem *mon = 0;
+        LIST_FOREACH(mon, &sub->monitoredItems, listEntry) {
+            if(mon->monitoredItemId == modifiedRequest.itemsToModify[i].monitoredItemId) {
+                modifiedRequest.itemsToModify[i].requestedParameters.clientHandle = mon->clientHandle;
+                break;
+            }
+        }
+    }
+
+    __UA_Client_Service(client,
+                        &modifiedRequest, &UA_TYPES[UA_TYPES_MODIFYMONITOREDITEMSREQUEST],
+                        &response, &UA_TYPES[UA_TYPES_MODIFYMONITOREDITEMSRESPONSE]);
+
+    UA_ModifyMonitoredItemsRequest_deleteMembers(&modifiedRequest);
+    return response;
 }
 
 /*************************************/
@@ -493,14 +534,14 @@ processDataChangeNotification(UA_Client *client, UA_Client_Subscription *sub,
         }
 
         if(!mon) {
-            UA_LOG_DEBUG(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_DEBUG(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "Could not process a notification with clienthandle %u on subscription %u",
                          min->clientHandle, sub->subscriptionId);
             continue;
         }
 
         if(mon->isEventMonitoredItem) {
-            UA_LOG_DEBUG(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_DEBUG(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "MonitoredItem is configured for Events. But received a "
                          "DataChangeNotification.");
             continue;
@@ -521,19 +562,19 @@ processEventNotification(UA_Client *client, UA_Client_Subscription *sub,
         /* Find the MonitoredItem */
         UA_Client_MonitoredItem *mon;
         LIST_FOREACH(mon, &sub->monitoredItems, listEntry) {
-            if(mon->monitoredItemId == eventFieldList->clientHandle)
+            if(mon->clientHandle == eventFieldList->clientHandle)
                 break;
         }
 
         if(!mon) {
-            UA_LOG_DEBUG(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_DEBUG(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "Could not process a notification with clienthandle %u on subscription %u",
                          eventFieldList->clientHandle, sub->subscriptionId);
             continue;
         }
 
         if(!mon->isEventMonitoredItem) {
-            UA_LOG_DEBUG(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_DEBUG(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "MonitoredItem is configured for DataChanges. But received a "
                          "EventNotification.");
             continue;
@@ -574,13 +615,13 @@ processNotificationMessage(UA_Client *client, UA_Client_Subscription *sub,
             sub->statusChangeCallback(client, sub->subscriptionId, sub->context,
                                       (UA_StatusChangeNotification*)msg->content.decoded.data);
         } else {
-            UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                            "Dropped a StatusChangeNotification since no callback is registered");
         }
         return;
     }
 
-    UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+    UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                    "Unknown notification message type");
 }
 
@@ -594,11 +635,11 @@ UA_Client_Subscriptions_processPublishResponse(UA_Client *client, UA_PublishRequ
     if(response->responseHeader.serviceResult == UA_STATUSCODE_BADTOOMANYPUBLISHREQUESTS) {
         if(client->config.outStandingPublishRequests > 1) {
             client->config.outStandingPublishRequests--;
-            UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                           "Too many publishrequest, reduce outStandingPublishRequests to %d",
                            client->config.outStandingPublishRequests);
         } else {
-            UA_LOG_ERROR(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_ERROR(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "Too many publishrequest when outStandingPublishRequests = 1");
             UA_Client_Subscriptions_deleteSingle(client, response->subscriptionId);
         }
@@ -615,22 +656,25 @@ UA_Client_Subscriptions_processPublishResponse(UA_Client *client, UA_PublishRequ
 
     if(response->responseHeader.serviceResult == UA_STATUSCODE_BADSESSIONCLOSED) {
         if(client->state >= UA_CLIENTSTATE_SESSION) {
-            UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                            "Received Publish Response with code %s",
                             UA_StatusCode_name(response->responseHeader.serviceResult));
+            UA_Client_Subscription* sub = findSubscription(client, response->subscriptionId);
+            if (sub != NULL)
+              UA_Client_Subscription_deleteInternal(client, sub);
         }
         return;
     }
 
     if(response->responseHeader.serviceResult == UA_STATUSCODE_BADSESSIONIDINVALID) {
         UA_Client_disconnect(client); /* TODO: This should be handled before the process callback */
-        UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                        "Received BadSessionIdInvalid");
         return;
     }
 
     if(response->responseHeader.serviceResult != UA_STATUSCODE_GOOD) {
-        UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                        "Received Publish Response with code %s",
                        UA_StatusCode_name(response->responseHeader.serviceResult));
         return;
@@ -639,7 +683,7 @@ UA_Client_Subscriptions_processPublishResponse(UA_Client *client, UA_PublishRequ
     UA_Client_Subscription *sub = findSubscription(client, response->subscriptionId);
     if(!sub) {
         response->responseHeader.serviceResult = UA_STATUSCODE_BADINTERNALERROR;
-        UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                        "Received Publish Response for a non-existant subscription");
         return;
     }
@@ -648,7 +692,7 @@ UA_Client_Subscriptions_processPublishResponse(UA_Client *client, UA_PublishRequ
 
     /* Detect missing message - OPC Unified Architecture, Part 4 5.13.1.1 e) */
     if(UA_Client_Subscriptions_nextSequenceNumber(sub->sequenceNumber) != msg->sequenceNumber) {
-        UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+        UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                      "Invalid subscription sequence number: expected %u but got %u",
                      UA_Client_Subscriptions_nextSequenceNumber(sub->sequenceNumber),
                      msg->sequenceNumber);
@@ -676,7 +720,7 @@ UA_Client_Subscriptions_processPublishResponse(UA_Client *client, UA_PublishRequ
         UA_Client_NotificationsAckNumber *tmpAck = (UA_Client_NotificationsAckNumber*)
             UA_malloc(sizeof(UA_Client_NotificationsAckNumber));
         if(!tmpAck) {
-            UA_LOG_WARNING(client->config.logger, UA_LOGCATEGORY_CLIENT,
+            UA_LOG_WARNING(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                            "Not enough memory to store the acknowledgement for a publish "
                            "message on subscription %u", sub->subscriptionId);
             break;
@@ -738,8 +782,9 @@ UA_Client_Subscriptions_backgroundPublishInactivityCheck(UA_Client *client) {
             sub->lastActivity = UA_DateTime_nowMonotonic();
 
             if(client->config.subscriptionInactivityCallback)
-                client->config.subscriptionInactivityCallback(client, sub->subscriptionId, sub->context);
-            UA_LOG_ERROR(client->config.logger, UA_LOGCATEGORY_CLIENT,
+                client->config.subscriptionInactivityCallback(client, sub->subscriptionId,
+                                                              sub->context);
+            UA_LOG_ERROR(&client->config.logger, UA_LOGCATEGORY_CLIENT,
                          "Inactivity for Subscription %u.", sub->subscriptionId);
         }
     }
@@ -759,6 +804,7 @@ UA_Client_Subscriptions_backgroundPublish(UA_Client *client) {
         if (!request)
             return UA_STATUSCODE_BADOUTOFMEMORY;
 
+        request->requestHeader.timeoutHint=60000;
         UA_StatusCode retval = UA_Client_preparePublishRequest(client, request);
         if(retval != UA_STATUSCODE_GOOD) {
             UA_PublishRequest_delete(request);

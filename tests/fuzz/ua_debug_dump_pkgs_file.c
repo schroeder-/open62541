@@ -12,14 +12,22 @@
 #error UA_DEBUG_DUMP_PKGS_FILE must be defined
 #endif
 
+#include <open62541/transport_generated_encoding_binary.h>
+#include <open62541/types.h>
+#include <open62541/types_generated_encoding_binary.h>
+
+#include "server/ua_server_internal.h"
+
 #include <stdio.h>
 #include <stdlib.h>
-#include <ua_types.h>
-#include <server/ua_server_internal.h>
 #include <unistd.h>
 
-#include "ua_transport_generated_encoding_binary.h"
-#include "ua_types_generated_encoding_binary.h"
+// This number is added to the end of every corpus data as 4 bytes.
+// It allows to generate valid corpus and then the fuzzer will use
+// these last 4 bytes to determine the simulated available RAM.
+// The fuzzer will then fiddle around with this number and (hopefully)
+// make it smaller, so that we can simulate Out-of-memory errors.
+#define UA_DUMP_RAM_SIZE 8 * 1024 * 1024
 
 unsigned int UA_dump_chunkCount = 0;
 
@@ -113,7 +121,7 @@ UA_debug_dump_setName_withoutChannel(UA_Server *server, UA_Connection *connectio
 
     if ((tcpMessageHeader.messageTypeAndChunkType & 0x00ffffff) == UA_MESSAGETYPE_MSG) {
         // this should not happen in normal operation
-        UA_LOG_ERROR(server->config.logger, UA_LOGCATEGORY_SERVER, "Got MSG package without channel.");
+        UA_LOG_ERROR(&server->config.logger, UA_LOGCATEGORY_SERVER, "Got MSG package without channel.");
         return UA_STATUSCODE_BADUNEXPECTEDERROR;
     }
     return UA_STATUSCODE_GOOD;
@@ -157,7 +165,7 @@ UA_debug_dumpCompleteChunk(UA_Server *const server, UA_Connection *const connect
         TAILQ_INIT(&dummy.messages);
         UA_ByteString messageBufferCopy;
         UA_ByteString_copy(messageBuffer, &messageBufferCopy);
-        UA_SecureChannel_decryptAddChunk(&dummy, &messageBufferCopy);
+        UA_SecureChannel_decryptAddChunk(&dummy, &messageBufferCopy, UA_TRUE);
         UA_SecureChannel_processCompleteMessages(&dummy, &dump_filename, UA_debug_dump_setName_withChannel);
         UA_SecureChannel_deleteMessages(&dummy);
         UA_ByteString_deleteMembers(&messageBufferCopy);
@@ -167,19 +175,22 @@ UA_debug_dumpCompleteChunk(UA_Server *const server, UA_Connection *const connect
     snprintf(fileName, 255, "%s/%05d_%s%s", UA_CORPUS_OUTPUT_DIR, ++UA_dump_chunkCount,
              dump_filename.messageType ? dump_filename.messageType : "", dump_filename.serviceName);
 
-    char dumpOutputFile[255];
+    char dumpOutputFile[266];
     snprintf(dumpOutputFile, 255, "%s.bin", fileName);
     // check if file exists and if yes create a counting filename to avoid overwriting
     unsigned cnt = 1;
     while ( access( dumpOutputFile, F_OK ) != -1 ) {
-        snprintf(dumpOutputFile, 255, "%s_%d.bin", fileName, cnt);
+        snprintf(dumpOutputFile, 266, "%s_%d.bin", fileName, cnt);
         cnt++;
     }
 
-    UA_LOG_INFO(server->config.logger, UA_LOGCATEGORY_SERVER,
+    UA_LOG_INFO(&server->config.logger, UA_LOGCATEGORY_SERVER,
                 "Dumping package %s", dumpOutputFile);
 
     FILE *write_ptr = fopen(dumpOutputFile, "ab");
     fwrite(messageBuffer->data, messageBuffer->length, 1, write_ptr); // write 10 bytes from our buffer
+    // add the available memory size. See the UA_DUMP_RAM_SIZE define for more info.
+    uint32_t ramSize = UA_DUMP_RAM_SIZE;
+    fwrite(&ramSize, sizeof(ramSize), 1, write_ptr);
     fclose(write_ptr);
 }

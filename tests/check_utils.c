@@ -2,12 +2,12 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <open62541/client.h>
+
+#include "ua_util_internal.h"
+
 #include <stdlib.h>
 
-#include "ua_types.h"
-#include "ua_client.h"
-#include "ua_util.h"
-#include "ua_util_internal.h"
 #include "check.h"
 
 START_TEST(EndpointUrl_split) {
@@ -66,6 +66,10 @@ START_TEST(EndpointUrl_split) {
     ck_assert_uint_eq(port, 1234);
     ck_assert(UA_String_equal(&path, &expectedPath));
 
+    // invalid IPv6: missing ]
+    endPointUrl = UA_STRING("opc.tcp://[2001:0db8:85a3::8a2e:0370:7334");
+    ck_assert_uint_eq(UA_parseEndpointUrl(&endPointUrl, &hostname, &port, &path), UA_STATUSCODE_BADTCPENDPOINTURLINVALID);
+
     // empty hostname
     endPointUrl = UA_STRING("opc.tcp://:");
     port = 0;
@@ -120,6 +124,71 @@ START_TEST(EndpointUrl_split) {
 }
 END_TEST
 
+START_TEST(EndpointUrl_ethernet) {
+    UA_String target;
+    UA_UInt16 vid = 0;
+    UA_Byte pcp = 0;
+    UA_String expected;
+
+    // check for too short url
+    UA_String endPointUrl = UA_STRING("inv.ali:/");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(vid, 0);
+    ck_assert_uint_eq(pcp, 0);
+
+    // long enough, but malformed
+    endPointUrl = UA_STRING("opc.eth.//target:");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+
+    // valid without vid and pcp but leading ':'
+    endPointUrl = UA_STRING("opc.eth://target:");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(vid, 0);
+    ck_assert_uint_eq(pcp, 0);
+
+    // without pcp and vid as non decimal
+    endPointUrl = UA_STRING("opc.eth://target:abc");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(vid, 0);
+    ck_assert_uint_eq(pcp, 0);
+
+    // pcp as non decimal
+    endPointUrl = UA_STRING("opc.eth://target:100.abc");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(vid, 100);
+    ck_assert_uint_eq(pcp, 0);
+
+    // valid without pcp but leading '.'
+    endPointUrl = UA_STRING("opc.eth://target:100.");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_BADINTERNALERROR);
+    ck_assert_uint_eq(vid, 100);
+    ck_assert_uint_eq(pcp, 0);
+
+    // valid without pcp
+    endPointUrl = UA_STRING("opc.eth://target:100");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_GOOD);
+    expected = UA_STRING("target");
+    ck_assert(UA_String_equal(&target, &expected));
+    ck_assert_uint_eq(vid, 100);
+    ck_assert_uint_eq(pcp, 0);
+
+    // valid
+    endPointUrl = UA_STRING("opc.eth://target:100.7");
+    ck_assert_uint_eq(UA_parseEndpointUrlEthernet(&endPointUrl, &target, &vid, &pcp),
+                      UA_STATUSCODE_GOOD);
+    expected = UA_STRING("target");
+    ck_assert(UA_String_equal(&target, &expected));
+    ck_assert_uint_eq(vid, 100);
+    ck_assert_uint_eq(pcp, 7);
+}
+END_TEST
 
 START_TEST(readNumber) {
     UA_UInt32 result;
@@ -130,6 +199,27 @@ START_TEST(readNumber) {
 
     ck_assert_uint_eq(UA_readNumber((UA_Byte*)"123456789", 9, &result), 9);
     ck_assert_uint_eq(result, 123456789);
+}
+END_TEST
+
+START_TEST(readNumberWithBase) {
+    UA_UInt32 result;
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"g", 1, &result, 16), 0);
+
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"f", 1, &result, 16), 1);
+    ck_assert_uint_eq(result, 15);
+
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"F", 1, &result, 16), 1);
+    ck_assert_uint_eq(result, 15);
+
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"1x", 2, &result, 16), 1);
+    ck_assert_uint_eq(result, 1);
+
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"12345678", 9, &result, 16), 8);
+    ck_assert_uint_eq(result, 0x12345678);
+
+    ck_assert_uint_eq(UA_readNumberWithBase((UA_Byte*)"123456789", 9, &result, 8), 7);
+    ck_assert_uint_eq(result, 01234567);
 }
 END_TEST
 
@@ -159,13 +249,18 @@ END_TEST
 
 static void assertNodeIdString(const UA_String *gotStr, const char* expectedStr) {
     size_t expectedStringLength = strlen(expectedStr);
-    ck_assert_uint_ge(gotStr->length, expectedStringLength);
+    ck_assert_uint_eq(gotStr->length, expectedStringLength);
     char *gotChars = (char*)UA_malloc(gotStr->length+1);
     memcpy(gotChars, gotStr->data, gotStr->length);
     gotChars[gotStr->length] = 0;
     ck_assert_str_eq(gotChars, expectedStr);
     UA_free(gotChars);
 }
+
+START_TEST(idToStringNull) {
+    UA_String str = UA_STRING_NULL;
+    ck_assert_int_eq(UA_NodeId_toString(NULL, &str), UA_STATUSCODE_GOOD);
+} END_TEST
 
 START_TEST(idToStringNumeric) {
     UA_NodeId n;
@@ -304,13 +399,18 @@ static Suite* testSuite_Utils(void) {
     TCase *tc_endpointUrl_split = tcase_create("EndpointUrl_split");
     tcase_add_test(tc_endpointUrl_split, EndpointUrl_split);
     suite_add_tcase(s,tc_endpointUrl_split);
+    TCase *tc_endpointUrl_ethernet = tcase_create("EndpointUrl_ethernet");
+    tcase_add_test(tc_endpointUrl_ethernet, EndpointUrl_ethernet);
+    suite_add_tcase(s,tc_endpointUrl_ethernet);
     TCase *tc_utils = tcase_create("Utils");
     tcase_add_test(tc_utils, readNumber);
+    tcase_add_test(tc_utils, readNumberWithBase);
     tcase_add_test(tc_utils, StatusCode_msg);
     suite_add_tcase(s,tc_utils);
 
 
     TCase *tc1 = tcase_create("test nodeid string");
+    tcase_add_test(tc1, idToStringNull);
     tcase_add_test(tc1, idToStringNumeric);
     tcase_add_test(tc1, idToStringString);
     tcase_add_test(tc1, idToStringGuid);

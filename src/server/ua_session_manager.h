@@ -12,16 +12,17 @@
 #ifndef UA_SESSION_MANAGER_H_
 #define UA_SESSION_MANAGER_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <open62541/server.h>
 
-#include "ua_server.h"
-#include "ua_util_internal.h"
+#include "open62541_queue.h"
 #include "ua_session.h"
-#include "../../deps/queue.h"
+#include "ua_util_internal.h"
+#include "ua_workqueue.h"
+
+_UA_BEGIN_DECLS
 
 typedef struct session_list_entry {
+    UA_DelayedCallback cleanupCallback;
     LIST_ENTRY(session_list_entry) pointers;
     UA_Session session;
 } session_list_entry;
@@ -57,8 +58,6 @@ UA_SessionManager_getSessionByToken(UA_SessionManager *sm, const UA_NodeId *toke
 UA_Session *
 UA_SessionManager_getSessionById(UA_SessionManager *sm, const UA_NodeId *sessionId);
 
-#ifdef __cplusplus
-} // extern "C"
-#endif
+_UA_END_DECLS
 
 #endif /* UA_SESSION_MANAGER_H_ */

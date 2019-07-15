@@ -2,17 +2,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <math.h>
-#include <float.h>
-#include "ua_types.h"
+#include <open62541/types.h>
+#include <open62541/types_generated.h>
+#include <open62541/types_generated_encoding_binary.h>
+#include <open62541/types_generated_handling.h>
+#include <open62541/util.h>
+
 #include "ua_types_encoding_binary.h"
-#include "ua_types_generated.h"
-#include "ua_types_generated_handling.h"
-#include "ua_types_generated_encoding_binary.h"
-#include "ua_util.h"
-#include "check.h"
+
+#include <check.h>
+#include <float.h>
+#include <math.h>
 
 /* copied here from encoding_binary.c */
 enum UA_VARIANT_ENCODINGMASKTYPE_enum {
@@ -810,8 +810,8 @@ START_TEST(UA_Float_encodeShallWorkOnExample) {
         {0x00, 0x00, 0x80, 0x7F}, // INF
         {0x00, 0x00, 0x80, 0xFF} // -INF
     };
-#if defined(_WIN32) || defined(__TINYC__)
-    // on WIN32 or TinyCC -NAN is encoded differently
+#if defined(_MSC_VER) || defined(__TINYC__)
+    /* On Visual Studio or TinyCC -NAN is encoded differently */
     result[4][3] = 127;
 #endif
 
@@ -993,6 +993,19 @@ START_TEST(UA_DateTime_toStructShallWorkOnExample) {
     ck_assert_int_eq(dst.day, 14);
     ck_assert_int_eq(dst.month, 4);
     ck_assert_int_eq(dst.year, 2014);
+}
+END_TEST
+
+START_TEST(UA_QualifiedName_equalShallWorkOnExample) {
+    // given
+    UA_QualifiedName qn1 = UA_QUALIFIEDNAME(5, "tEsT123!");
+    UA_QualifiedName qn2 = UA_QUALIFIEDNAME(3, "tEsT123!");
+    UA_QualifiedName qn3 = UA_QUALIFIEDNAME(5, "tEsT1");
+    UA_QualifiedName qn4 = UA_QUALIFIEDNAME(5, "tEsT123!");
+
+    ck_assert(UA_QualifiedName_equal(&qn1, &qn2) == UA_FALSE);
+    ck_assert(UA_QualifiedName_equal(&qn1, &qn3) == UA_FALSE);
+    ck_assert(UA_QualifiedName_equal(&qn1, &qn4) == UA_TRUE);
 }
 END_TEST
 
@@ -1506,6 +1519,10 @@ static Suite *testSuite_builtin(void) {
     TCase *tc_convert = tcase_create("convert");
     tcase_add_test(tc_convert, UA_DateTime_toStructShallWorkOnExample);
     suite_add_tcase(s, tc_convert);
+
+    TCase *tc_equal = tcase_create("equal");
+    tcase_add_test(tc_equal, UA_QualifiedName_equalShallWorkOnExample);
+    suite_add_tcase(s, tc_equal);
 
     TCase *tc_copy = tcase_create("copy");
     tcase_add_test(tc_copy, UA_Array_copyByteArrayShallWorkOnExample);

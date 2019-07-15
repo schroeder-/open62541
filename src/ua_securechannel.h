@@ -11,16 +11,15 @@
 #ifndef UA_SECURECHANNEL_H_
 #define UA_SECURECHANNEL_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <open62541/plugin/log.h>
+#include <open62541/plugin/securitypolicy.h>
+#include <open62541/transport_generated.h>
+#include <open62541/types.h>
 
-#include "ua_types.h"
-#include "ua_transport_generated.h"
+#include "open62541_queue.h"
 #include "ua_connection_internal.h"
-#include "ua_plugin_securitypolicy.h"
-#include "ua_plugin_log.h"
-#include "../deps/queue.h"
+
+_UA_BEGIN_DECLS
 
 #define UA_SECURE_CONVERSATION_MESSAGE_HEADER_LENGTH 12
 #define UA_SECURE_MESSAGE_HEADER_LENGTH 24
@@ -75,8 +74,16 @@ typedef TAILQ_HEAD(UA_MessageQueue, UA_Message) UA_MessageQueue;
 struct UA_SecureChannel {
     UA_SecureChannelState   state;
     UA_MessageSecurityMode  securityMode;
+    /* We use three tokens because when switching tokens the client is allowed to accept
+     * messages with the old token for up to 25% of the lifetime after the token would have timed out.
+     * For messages that are sent, the new token is already used, which is contained in the securityToken
+     * variable. The nextSecurityToken variable holds a newly issued token, that will be automatically
+     * revolved into the securityToken variable. This could be done with two variables, but would require
+     * greater changes to the current code. This could be done in the future after the client and networking
+     * structure has been reworked, which would make this easier to implement. */
     UA_ChannelSecurityToken securityToken; /* the channelId is contained in the securityToken */
     UA_ChannelSecurityToken nextSecurityToken;
+    UA_ChannelSecurityToken previousSecurityToken;
 
     /* The endpoint and context of the channel */
     const UA_SecurityPolicy *securityPolicy;
@@ -100,6 +107,8 @@ struct UA_SecureChannel {
 
 void UA_SecureChannel_init(UA_SecureChannel *channel);
 
+void UA_SecureChannel_close(UA_SecureChannel *channel);
+
 UA_StatusCode
 UA_SecureChannel_setSecurityPolicy(UA_SecureChannel *channel,
                                    const UA_SecurityPolicy *securityPolicy,
@@ -108,7 +117,7 @@ UA_SecureChannel_setSecurityPolicy(UA_SecureChannel *channel,
 /* Remove (partially) received unprocessed messages */
 void UA_SecureChannel_deleteMessages(UA_SecureChannel *channel);
 
-void UA_SecureChannel_deleteMembersCleanup(UA_SecureChannel *channel);
+void UA_SecureChannel_deleteMembers(UA_SecureChannel *channel);
 
 /* Generates new keys and sets them in the channel context */
 UA_StatusCode
@@ -187,7 +196,8 @@ UA_MessageContext_abort(UA_MessageContext *mc);
 
 /* Decrypt a chunk and add it to the message. Create a new message if necessary. */
 UA_StatusCode
-UA_SecureChannel_decryptAddChunk(UA_SecureChannel *channel, const UA_ByteString *chunk);
+UA_SecureChannel_decryptAddChunk(UA_SecureChannel *channel, const UA_ByteString *chunk,
+                                 UA_Boolean allowPreviousToken);
 
 /* The network buffer is about to be cleared. Copy all chunks that point into
  * the network buffer into dedicated memory. */
@@ -231,7 +241,7 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_TRACE_CHANNEL_INTERNAL(LOGGER, CHANNEL, MSG, ...)              \
     UA_LOG_TRACE(LOGGER, UA_LOGCATEGORY_SECURECHANNEL,                        \
                  "Connection %i | SecureChannel %i | " MSG "%.0s",            \
-                 ((CHANNEL)->connection ? (CHANNEL)->connection->sockfd : 0), \
+                 ((CHANNEL)->connection ? (int)((CHANNEL)->connection->sockfd) : 0), \
                  (CHANNEL)->securityToken.channelId, __VA_ARGS__)
 
 #define UA_LOG_TRACE_CHANNEL(LOGGER, CHANNEL, ...)        \
@@ -240,7 +250,7 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_DEBUG_CHANNEL_INTERNAL(LOGGER, CHANNEL, MSG, ...)              \
     UA_LOG_DEBUG(LOGGER, UA_LOGCATEGORY_SECURECHANNEL,                        \
                  "Connection %i | SecureChannel %i | " MSG "%.0s",            \
-                 ((CHANNEL)->connection ? (CHANNEL)->connection->sockfd : 0), \
+                 ((CHANNEL)->connection ? (int)((CHANNEL)->connection->sockfd) : 0), \
                  (CHANNEL)->securityToken.channelId, __VA_ARGS__)
 
 #define UA_LOG_DEBUG_CHANNEL(LOGGER, CHANNEL, ...)        \
@@ -249,7 +259,7 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_INFO_CHANNEL_INTERNAL(LOGGER, CHANNEL, MSG, ...)               \
     UA_LOG_INFO(LOGGER, UA_LOGCATEGORY_SECURECHANNEL,                         \
                  "Connection %i | SecureChannel %i | " MSG "%.0s",            \
-                 ((CHANNEL)->connection ? (CHANNEL)->connection->sockfd : 0), \
+                 ((CHANNEL)->connection ? (int)((CHANNEL)->connection->sockfd) : 0), \
                  (CHANNEL)->securityToken.channelId, __VA_ARGS__)
 
 #define UA_LOG_INFO_CHANNEL(LOGGER, CHANNEL, ...)        \
@@ -258,7 +268,7 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_WARNING_CHANNEL_INTERNAL(LOGGER, CHANNEL, MSG, ...)            \
     UA_LOG_WARNING(LOGGER, UA_LOGCATEGORY_SECURECHANNEL,                      \
                  "Connection %i | SecureChannel %i | " MSG "%.0s",            \
-                 ((CHANNEL)->connection ? (CHANNEL)->connection->sockfd : 0), \
+                 ((CHANNEL)->connection ? (int)((CHANNEL)->connection->sockfd) : 0), \
                  (CHANNEL)->securityToken.channelId, __VA_ARGS__)
 
 #define UA_LOG_WARNING_CHANNEL(LOGGER, CHANNEL, ...)        \
@@ -267,7 +277,7 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_ERROR_CHANNEL_INTERNAL(LOGGER, CHANNEL, MSG, ...)              \
     UA_LOG_ERROR(LOGGER, UA_LOGCATEGORY_SECURECHANNEL,                        \
                  "Connection %i | SecureChannel %i | " MSG "%.0s",            \
-                 ((CHANNEL)->connection ? (CHANNEL)->connection->sockfd : 0), \
+                 ((CHANNEL)->connection ? (int)((CHANNEL)->connection->sockfd) : 0), \
                  (CHANNEL)->securityToken.channelId, __VA_ARGS__)
 
 #define UA_LOG_ERROR_CHANNEL(LOGGER, CHANNEL, ...)        \
@@ -282,8 +292,6 @@ UA_SecureChannel_processCompleteMessages(UA_SecureChannel *channel, void *applic
 #define UA_LOG_FATAL_CHANNEL(LOGGER, CHANNEL, ...)        \
     UA_MACRO_EXPAND(UA_LOG_FATAL_CHANNEL_INTERNAL(LOGGER, CHANNEL, __VA_ARGS__, ""))
 
-#ifdef __cplusplus
-} // extern "C"
-#endif
+_UA_END_DECLS
 
 #endif /* UA_SECURECHANNEL_H_ */

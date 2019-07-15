@@ -5,39 +5,41 @@
  * Copyright (c) 2017 - 2018 Fraunhofer IOSB (Author: Andreas Ebner)
  */
 
-#include <string.h>
-#include <math.h>
-#include "ua_types.h"
-#include "ua_server_pubsub.h"
-#include "src_generated/ua_types_generated.h"
-#include "ua_network_pubsub_udp.h"
+#include <open62541/plugin/pubsub.h>
+#include <open62541/plugin/pubsub_udp.h>
+#include <open62541/server_config_default.h>
+#include <open62541/server_pubsub.h>
+#include <open62541/types.h>
+#include <open62541/types_generated.h>
+
 #include "ua_server_internal.h"
+
+#include <math.h>
+#include <string.h>
+
 #include "check.h"
-#include "ua_plugin_pubsub.h"
-#include "ua_config_default.h"
 
 UA_Server *server = NULL;
-UA_ServerConfig *config = NULL;
 
 UA_NodeId connection1, connection2, writerGroup1, writerGroup2, writerGroup3,
         publishedDataSet1, publishedDataSet2, dataSetWriter1, dataSetWriter2, dataSetWriter3;
 
 static void setup(void) {
-    config = UA_ServerConfig_new_default();
-    config->pubsubTransportLayers = (UA_PubSubTransportLayer *) UA_malloc(sizeof(UA_PubSubTransportLayer));
-    if(!config->pubsubTransportLayers) {
-        UA_ServerConfig_delete(config);
-    }
+    server = UA_Server_new();
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    UA_ServerConfig_setDefault(config);
+
+    config->pubsubTransportLayers = (UA_PubSubTransportLayer *)
+        UA_malloc(sizeof(UA_PubSubTransportLayer));
     config->pubsubTransportLayers[0] = UA_PubSubTransportLayerUDPMP();
     config->pubsubTransportLayersSize++;
-    server = UA_Server_new(config);
+
     UA_Server_run_startup(server);
 }
 
 static void teardown(void) {
     UA_Server_run_shutdown(server);
     UA_Server_delete(server);
-    UA_ServerConfig_delete(config);
 }
 
 static void addPublishedDataSet(UA_String pdsName, UA_NodeId *assignedId){

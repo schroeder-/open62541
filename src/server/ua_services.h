@@ -15,12 +15,11 @@
 #ifndef UA_SERVICES_H_
 #define UA_SERVICES_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+#include <open62541/server.h>
 
-#include "ua_server.h"
 #include "ua_session.h"
+
+_UA_BEGIN_DECLS
 
 /**
  * .. _services:
@@ -47,9 +46,6 @@ extern "C" {
 
 typedef void (*UA_Service)(UA_Server*, UA_Session*,
                            const void *request, void *response);
-
-typedef UA_StatusCode (*UA_InSituService)(UA_Server*, UA_Session*, UA_MessageContext *mc,
-                                          const void *request, UA_ResponseHeader *rh);
 
 /**
  * Discovery Service Set
@@ -83,7 +79,7 @@ void Service_GetEndpoints(UA_Server *server, UA_Session *session,
  * ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
  * Returns the Servers known to a Discovery Server. Unlike FindServer,
  * this Service is only implemented by Discovery Servers. It additionally
- * Returns servery which may have been detected trough Multicast */
+ * returns servers which may have been detected through Multicast. */
 void Service_FindServersOnNetwork(UA_Server *server, UA_Session *session,
                                   const UA_FindServersOnNetworkRequest *request,
                                   UA_FindServersOnNetworkResponse *response);
@@ -306,8 +302,8 @@ void Service_UnregisterNodes(UA_Server *server, UA_Session *session,
  * elements are indexed, such as an array, this Service allows Clients to read
  * the entire set of indexed values as a composite, to read individual elements
  * or to read ranges of elements of the composite. */
-UA_StatusCode Service_Read(UA_Server *server, UA_Session *session, UA_MessageContext *mc,
-                           const UA_ReadRequest *request, UA_ResponseHeader *responseHeader);
+void Service_Read(UA_Server *server, UA_Session *session,
+                  const UA_ReadRequest *request, UA_ReadResponse *response);
 
 /**
  * Write Service
@@ -317,8 +313,7 @@ UA_StatusCode Service_Read(UA_Server *server, UA_Session *session, UA_MessageCon
  * the entire set of indexed values as a composite, to write individual elements
  * or to write ranges of elements of the composite. */
 void Service_Write(UA_Server *server, UA_Session *session,
-                   const UA_WriteRequest *request,
-                   UA_WriteResponse *response);
+                   const UA_WriteRequest *request, UA_WriteResponse *response);
 
 /**
  * HistoryRead Service
@@ -326,7 +321,10 @@ void Service_Write(UA_Server *server, UA_Session *session,
  * Used to read historical values or Events of one or more Nodes. Servers may
  * make historical values available to Clients using this Service, although the
  * historical values themselves are not visible in the AddressSpace. */
-/* Not Implemented */
+#ifdef UA_ENABLE_HISTORIZING
+void Service_HistoryRead(UA_Server *server, UA_Session *session,
+                         const UA_HistoryReadRequest *request,
+                         UA_HistoryReadResponse *response);
 
 /**
  * HistoryUpdate Service
@@ -334,7 +332,11 @@ void Service_Write(UA_Server *server, UA_Session *session,
  * Used to update historical values or Events of one or more Nodes. Several
  * request parameters indicate how the Server is to update the historical value
  * or Event. Valid actions are Insert, Replace or Delete. */
-/* Not Implemented */
+void
+Service_HistoryUpdate(UA_Server *server, UA_Session *session,
+                      const UA_HistoryUpdateRequest *request,
+                      UA_HistoryUpdateResponse *response);
+#endif
 
 /**
  * .. _method-services:
@@ -407,12 +409,6 @@ void Service_ModifyMonitoredItems(UA_Server *server, UA_Session *session,
 void Service_SetMonitoringMode(UA_Server *server, UA_Session *session,
                                const UA_SetMonitoringModeRequest *request,
                                UA_SetMonitoringModeResponse *response);
-
-#ifdef UA_ENABLE_HISTORIZING
-void Service_HistoryRead(UA_Server *server, UA_Session *session,
-                         const UA_HistoryReadRequest *request,
-                         UA_HistoryReadResponse *response);
-#endif
 
 /**
  * SetTriggering Service
@@ -494,8 +490,6 @@ void Service_DeleteSubscriptions(UA_Server *server, UA_Session *session,
 
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
 
-#ifdef __cplusplus
-} // extern "C"
-#endif
+_UA_END_DECLS
 
 #endif /* UA_SERVICES_H_ */

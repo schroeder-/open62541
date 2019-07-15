@@ -24,8 +24,8 @@
 
 import logging
 import argparse
+from datatypes import NodeId
 from nodeset import *
-from backend_open62541 import generateOpen62541Code
 
 parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('-e', '--existing',
@@ -47,11 +47,6 @@ parser.add_argument('-x', '--xml',
 parser.add_argument('outputFile',
                     metavar='<outputFile>',
                     help='The path/basename for the <output file>.c and <output file>.h files to be generated. This will also be the function name used in the header and c-file.')
-
-parser.add_argument('--generate-ns0',
-                    action='store_true',
-                    dest="generate_ns0",
-                    help='Omit some consistency checks for bootstrapping namespace 0, create references to parents and type definitions manually')
 
 parser.add_argument('--internal-headers',
                     action='store_true',
@@ -82,15 +77,16 @@ parser.add_argument('-t', '--types-array',
                     default=[],
                     help='Types array for the given namespace. Can be used mutliple times to define (in the same order as the .xml files, first for --existing, then --xml) the type arrays')
 
-parser.add_argument('--encode-binary-size',
-                    type=int,
-                    dest="encode_binary_size",
-                    default=32000,
-                    help='Size of the temporary array used to encode custom datatypes. If you don\'t know what it is, do not use this option')
-
 parser.add_argument('-v', '--verbose', action='count',
                     default=1,
                     help='Make the script more verbose. Can be applied up to 4 times')
+
+parser.add_argument('--backend',
+                    default='open62541',
+                    const='open62541',
+                    nargs='?',
+                    choices=['open62541', 'graphviz'],
+                    help='Backend for the output files (default: %(default)s)')
 
 args = parser.parse_args()
 
@@ -115,6 +111,8 @@ else:
 # Parse the XML files
 ns = NodeSet()
 nsCount = 0
+loadedFiles = list()
+
 
 def getTypesArray(nsIdx):
     if nsIdx < len(args.typesArray):
@@ -123,10 +121,18 @@ def getTypesArray(nsIdx):
         return "UA_TYPES"
 
 for xmlfile in args.existing:
+    if xmlfile.name in loadedFiles:
+        logger.info("Skipping Nodeset since it is already loaded: {} ".format(xmlfile.name))
+        continue
+    loadedFiles.append(xmlfile.name)
     logger.info("Preprocessing (existing) " + str(xmlfile.name))
     ns.addNodeSet(xmlfile, True, typesArray=getTypesArray(nsCount))
     nsCount +=1
 for xmlfile in args.infiles:
+    if xmlfile.name in loadedFiles:
+        logger.info("Skipping Nodeset since it is already loaded: {} ".format(xmlfile.name))
+        continue
+    loadedFiles.append(xmlfile.name)
     logger.info("Preprocessing " + str(xmlfile.name))
     ns.addNodeSet(xmlfile, typesArray=getTypesArray(nsCount))
     nsCount +=1
@@ -143,7 +149,7 @@ for blacklist in args.blacklistFiles:
     for line in blacklist.readlines():
         line = line.replace(" ", "")
         id = line.replace("\n", "")
-        if ns.getNodeByIDString(id) == None:
+        if ns.getNodeByIDString(id) is None:
             logger.info("Can't blacklist node, namespace does currently not contain a node with id " + str(id))
         else:
             ns.removeNodeById(line)
@@ -178,9 +184,22 @@ ns.buildEncodingRules()
 # buidEncodingRules.
 ns.allocateVariables()
 
-#printDependencyGraph(ns)
+ns.addInverseReferences()
 
-# Create the C code with the open62541 backend of the compiler
-logger.info("Generating Code")
-generateOpen62541Code(ns, args.outputFile, args.generate_ns0, args.internal_headers, args.typesArray, args.encode_binary_size)
+ns.setNodeParent()
+
+logger.info("Generating Code for Backend: {}".format(args.backend))
+
+if args.backend == "open62541":
+    # Create the C code with the open62541 backend of the compiler
+    from backend_open62541 import generateOpen62541Code
+    generateOpen62541Code(ns, args.outputFile, args.internal_headers, args.typesArray)
+elif args.backend == "graphviz":
+    from backend_graphviz import generateGraphvizCode
+    generateGraphvizCode(ns, filename=args.outputFile)
+else:
+    logger.error("Unsupported backend: {}".format(args.backend))
+    exit(1)
+
+
 logger.info("NodeSet generation code successfully printed")

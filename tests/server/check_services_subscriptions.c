@@ -2,20 +2,20 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "ua_server.h"
-#include "server/ua_services.h"
-#include "server/ua_server_internal.h"
-#include "server/ua_subscription.h"
-#include "ua_config_default.h"
+#include <open62541/server.h>
+#include <open62541/server_config_default.h>
 
-#include "check.h"
+#include "server/ua_server_internal.h"
+#include "server/ua_services.h"
+#include "server/ua_subscription.h"
+
+#include <check.h>
+
 #include "testing_clock.h"
 
 static UA_Server *server = NULL;
-static UA_ServerConfig *config = NULL;
 static UA_Session *session = NULL;
-
-UA_UInt32 monitored = 0; /* Number of active MonitoredItems */
+static UA_UInt32 monitored = 0; /* Number of active MonitoredItems */
 
 static void
 monitoredRegisterCallback(UA_Server *s,
@@ -39,9 +39,10 @@ createSession(void) {
 }
 
 static void setup(void) {
-    config = UA_ServerConfig_new_default();
+    server = UA_Server_new();
+    UA_ServerConfig *config = UA_Server_getConfig(server);
+    UA_ServerConfig_setDefault(config);
     config->monitoredItemRegisterCallback = monitoredRegisterCallback;
-    server = UA_Server_new(config);
     UA_Server_run_startup(server);
     createSession();
 }
@@ -49,15 +50,13 @@ static void setup(void) {
 static void teardown(void) {
     UA_Server_run_shutdown(server);
     UA_Server_delete(server);
-    UA_ServerConfig_delete(config);
-
     ck_assert_uint_eq(monitored, 0); /* All MonitoredItems have been de-registered */
 }
 
 #ifdef UA_ENABLE_SUBSCRIPTIONS
 
-UA_UInt32 subscriptionId;
-UA_UInt32 monitoredItemId;
+static UA_UInt32 subscriptionId;
+static UA_UInt32 monitoredItemId;
 
 static void
 createSubscription(void) {
@@ -730,6 +729,69 @@ START_TEST(Server_lifeTimeCount) {
 }
 END_TEST
 
+START_TEST(Server_invalidPublishingInterval) {
+    UA_Double savedPublishingIntervalLimitsMin = server->config.publishingIntervalLimits.min;
+    server->config.publishingIntervalLimits.min = 1;
+    /* Create a subscription */
+    UA_CreateSubscriptionRequest request;
+    UA_CreateSubscriptionResponse response;
+
+    UA_CreateSubscriptionRequest_init(&request);
+    request.publishingEnabled = true;
+    request.requestedPublishingInterval = -5.0; // Must be positive
+    UA_CreateSubscriptionResponse_init(&response);
+    Service_CreateSubscription(server, session, &request, &response);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert(response.revisedPublishingInterval ==
+              server->config.publishingIntervalLimits.min);
+    UA_CreateSubscriptionResponse_deleteMembers(&response);
+
+    server->config.publishingIntervalLimits.min = savedPublishingIntervalLimitsMin;
+}
+END_TEST
+
+START_TEST(Server_invalidSamplingInterval) {
+    createSubscription();
+
+    UA_Double savedSamplingIntervalLimitsMin = server->config.samplingIntervalLimits.min;
+    server->config.samplingIntervalLimits.min = 1;
+
+    UA_CreateMonitoredItemsRequest request;
+    UA_CreateMonitoredItemsRequest_init(&request);
+    request.subscriptionId = subscriptionId;
+    request.timestampsToReturn = UA_TIMESTAMPSTORETURN_SERVER;
+    UA_MonitoredItemCreateRequest item;
+    UA_MonitoredItemCreateRequest_init(&item);
+    UA_ReadValueId rvi;
+    UA_ReadValueId_init(&rvi);
+    rvi.nodeId = UA_NODEID_NUMERIC(0, UA_NS0ID_SERVER);
+    rvi.attributeId = UA_ATTRIBUTEID_BROWSENAME;
+    rvi.indexRange = UA_STRING_NULL;
+    item.itemToMonitor = rvi;
+    item.monitoringMode = UA_MONITORINGMODE_REPORTING;
+    UA_MonitoringParameters params;
+    UA_MonitoringParameters_init(&params);
+    params.samplingInterval = -5.0; // Must be positive
+    item.requestedParameters = params;
+    request.itemsToCreateSize = 1;
+    request.itemsToCreate = &item;
+
+    UA_CreateMonitoredItemsResponse response;
+    UA_CreateMonitoredItemsResponse_init(&response);
+    Service_CreateMonitoredItems(server, session, &request, &response);
+    ck_assert_uint_eq(response.responseHeader.serviceResult, UA_STATUSCODE_GOOD);
+    ck_assert_uint_eq(response.resultsSize, 1);
+    ck_assert_uint_eq(response.results[0].statusCode, UA_STATUSCODE_GOOD);
+    ck_assert(response.results[0].revisedSamplingInterval ==
+              server->config.samplingIntervalLimits.min);
+
+    UA_MonitoredItemCreateRequest_deleteMembers(&item);
+    UA_CreateMonitoredItemsResponse_deleteMembers(&response);
+
+    server->config.samplingIntervalLimits.min = savedSamplingIntervalLimitsMin;
+}
+END_TEST
+
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
 
 static Suite* testSuite_Client(void) {
@@ -740,16 +802,18 @@ static Suite* testSuite_Client(void) {
     tcase_add_test(tc_server, Server_createSubscription);
     tcase_add_test(tc_server, Server_modifySubscription);
     tcase_add_test(tc_server, Server_setPublishingMode);
+    tcase_add_test(tc_server, Server_invalidSamplingInterval);
     tcase_add_test(tc_server, Server_createMonitoredItems);
     tcase_add_test(tc_server, Server_modifyMonitoredItems);
     tcase_add_test(tc_server, Server_overflow);
     tcase_add_test(tc_server, Server_setMonitoringMode);
     tcase_add_test(tc_server, Server_deleteMonitoredItems);
     tcase_add_test(tc_server, Server_republish);
-    tcase_add_test(tc_server, Server_deleteSubscription);
     tcase_add_test(tc_server, Server_republish_invalid);
+    tcase_add_test(tc_server, Server_deleteSubscription);
     tcase_add_test(tc_server, Server_publishCallback);
     tcase_add_test(tc_server, Server_lifeTimeCount);
+    tcase_add_test(tc_server, Server_invalidPublishingInterval);
 #endif /* UA_ENABLE_SUBSCRIPTIONS */
     suite_add_tcase(s, tc_server);
 
